@@ -289,3 +289,62 @@ def delete_material(material_id: int) -> dict:
         if cursor.rowcount == 0:
             raise HTTPException(status_code=404, detail="Material not found")
         return {"deleted": material_id}
+
+
+def _build_where_clause(work_code: Optional[str]) -> tuple[str, tuple]:
+    if work_code is not None:
+        return "WHERE work_code = ?", (work_code,)
+    return "", ()
+
+
+@app.get("/stats")
+def get_statistics(work_code: Optional[str] = None) -> dict:
+    where_clause, params = _build_where_clause(work_code)
+    with db() as conn:
+        total = conn.execute(
+            f"SELECT COUNT(*) FROM firing_batches {where_clause}", params
+        ).fetchone()[0]
+
+        clay_rows = conn.execute(
+            f"""
+            SELECT clay AS name, COUNT(*) AS count
+            FROM firing_batches
+            {where_clause}
+            GROUP BY clay
+            ORDER BY count DESC, clay ASC
+            """,
+            params,
+        ).fetchall()
+        clay_stats = [dict(row) for row in clay_rows]
+
+        glaze_rows = conn.execute(
+            f"""
+            SELECT glaze AS name, COUNT(*) AS count
+            FROM firing_batches
+            {where_clause}
+            GROUP BY glaze
+            ORDER BY count DESC, glaze ASC
+            """,
+            params,
+        ).fetchall()
+        glaze_stats = [dict(row) for row in glaze_rows]
+
+        result_rows = conn.execute(
+            f"""
+            SELECT kiln_result AS name, COUNT(*) AS count
+            FROM firing_batches
+            {where_clause}
+            GROUP BY kiln_result
+            ORDER BY count DESC, kiln_result ASC
+            """,
+            params,
+        ).fetchall()
+        result_stats = [dict(row) for row in result_rows]
+
+    return {
+        "total_batches": total,
+        "work_code": work_code,
+        "by_clay": clay_stats,
+        "by_glaze": glaze_stats,
+        "by_result": result_stats,
+    }
