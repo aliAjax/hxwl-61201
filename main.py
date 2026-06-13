@@ -48,6 +48,18 @@ def init_db() -> None:
             )
             """
         )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS batch_remarks (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                batch_id INTEGER NOT NULL,
+                content TEXT NOT NULL,
+                author TEXT DEFAULT '',
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (batch_id) REFERENCES firing_batches(id)
+            )
+            """
+        )
 
 
 def row_to_dict(row: sqlite3.Row) -> dict:
@@ -65,6 +77,11 @@ class BatchCreate(BaseModel):
 class ResultUpdate(BaseModel):
     kiln_result: str
     actual_curve_note: Optional[str] = None
+
+
+class BatchRemarkCreate(BaseModel):
+    content: str
+    author: Optional[str] = ""
 
 
 class MaterialCreate(BaseModel):
@@ -166,6 +183,46 @@ def delete_batch(batch_id: int) -> dict:
         if cursor.rowcount == 0:
             raise HTTPException(status_code=404, detail="Batch not found")
         return {"deleted": batch_id}
+
+
+@app.post("/batches/{batch_id}/remarks", status_code=201)
+def create_remark(batch_id: int, payload: BatchRemarkCreate) -> dict:
+    with db() as conn:
+        batch = conn.execute(
+            "SELECT id FROM firing_batches WHERE id = ?", (batch_id,)
+        ).fetchone()
+        if batch is None:
+            raise HTTPException(status_code=404, detail="Batch not found")
+        cursor = conn.execute(
+            """
+            INSERT INTO batch_remarks (batch_id, content, author)
+            VALUES (?, ?, ?)
+            """,
+            (batch_id, payload.content, payload.author or ""),
+        )
+        row = conn.execute(
+            "SELECT * FROM batch_remarks WHERE id = ?", (cursor.lastrowid,)
+        ).fetchone()
+        return row_to_dict(row)
+
+
+@app.get("/batches/{batch_id}/remarks")
+def list_remarks(batch_id: int) -> list[dict]:
+    with db() as conn:
+        batch = conn.execute(
+            "SELECT id FROM firing_batches WHERE id = ?", (batch_id,)
+        ).fetchone()
+        if batch is None:
+            raise HTTPException(status_code=404, detail="Batch not found")
+        rows = conn.execute(
+            """
+            SELECT * FROM batch_remarks
+            WHERE batch_id = ?
+            ORDER BY created_at ASC, id ASC
+            """,
+            (batch_id,),
+        ).fetchall()
+        return [row_to_dict(row) for row in rows]
 
 
 @app.get("/works/{work_code}/history")
