@@ -3,7 +3,7 @@ import sqlite3
 from typing import Optional
 
 from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
 DB_PATH = "kiln_records.db"
 
@@ -37,6 +37,17 @@ def init_db() -> None:
             )
             """
         )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS material_dict (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                category TEXT NOT NULL CHECK(category IN ('clay', 'glaze')),
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(name, category)
+            )
+            """
+        )
 
 
 def row_to_dict(row: sqlite3.Row) -> dict:
@@ -54,6 +65,18 @@ class BatchCreate(BaseModel):
 class ResultUpdate(BaseModel):
     kiln_result: str
     actual_curve_note: Optional[str] = None
+
+
+class MaterialCreate(BaseModel):
+    name: str
+    category: str
+
+    @field_validator("category")
+    @classmethod
+    def validate_category(cls, v: str) -> str:
+        if v not in ("clay", "glaze"):
+            raise ValueError("category must be 'clay' or 'glaze'")
+        return v
 
 
 @app.on_event("startup")
@@ -157,3 +180,55 @@ def work_history(work_code: str) -> list[dict]:
             (work_code,),
         ).fetchall()
         return [row_to_dict(row) for row in rows]
+
+
+@app.post("/materials", status_code=201)
+def create_material(payload: MaterialCreate) -> dict:
+    with db() as conn:
+        try:
+            cursor = conn.execute(
+                """
+                INSERT INTO material_dict (name, category)
+                VALUES (?, ?)
+                """,
+                (payload.name.strip(), payload.category),
+            )
+        except sqlite3.IntegrityError:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Material '{payload.name}' already exists in category '{payload.category}'",
+            )
+        row = conn.execute(
+            "SELECT * FROM material_dict WHERE id = ?", (cursor.lastrowid,)
+        ).fetchone()
+        return row_to_dict(row)
+
+
+@app.get("/materials")
+def list_materials(category: Optional[str] = None) -> list[dict]:
+    with db() as conn:
+        if category is not None:
+            if category not in ("clay", "glaze"):
+                raise HTTPException(
+                    status_code=400, detail="category must be 'clay' or 'glaze'"
+                )
+            rows = conn.execute(
+                "SELECT * FROM material_dict WHERE category = ? ORDER BY name",
+                (category,),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT * FROM material_dict ORDER BY category, name"
+            ).fetchall()
+        return [row_to_dict(row) for row in rows]
+
+
+@app.delete("/materials/{material_id}")
+def delete_material(material_id: int) -> dict:
+    with db() as conn:
+        cursor = conn.execute(
+            "DELETE FROM material_dict WHERE id = ?", (material_id,)
+        )
+        if cursor.rowcount == 0:
+            raise HTTPException(status_code=404, detail="Material not found")
+        return {"deleted": material_id}
